@@ -190,74 +190,7 @@
         </div>
     </div>
 
-    <script>
-
-        function formatText(command) {
-            document.execCommand(command, false, null);
-        }
-
-        function insertTable() {
-            const table = `
-                <table border="1" style="width: 100%; margin: 10px 0;">
-                    <tr>
-                        <td>Cell 1</td>
-                        <td>Cell 2</td>
-                    </tr>
-                    <tr>
-                        <td>Cell 3</td>
-                        <td>Cell 4</td>
-                    </tr>
-                </table>
-            `;
-            document.execCommand('insertHTML', false, table);
-        }
-
-        function insertList(type) {
-            const selection = window.getSelection();
-            const range = selection.getRangeAt(0);
-
-            const list = document.createElement(type);
-            const listItem = document.createElement('li');
-            listItem.textContent = 'List item';
-            list.appendChild(listItem);
-
-            range.deleteContents();
-            range.insertNode(list);
-
-            // Create a new list item and set cursor inside it
-            const newItem = document.createElement('li');
-            newItem.appendChild(document.createElement('br'));
-            list.appendChild(newItem);
-
-            // Set cursor to the new item
-            const newRange = document.createRange();
-            newRange.setStart(newItem, 0);
-            newRange.collapse(true);
-            selection.removeAllRanges();
-            selection.addRange(newRange);
-        }
-
-        function insertImage() {
-            const imageUrl = prompt('Please enter the image URL:');
-            if (imageUrl) {
-                const img = `<img src="${imageUrl}" alt="Inserted image" style="max-width: 100%; height: auto;">`;
-                document.execCommand('insertHTML', false, img);
-            }
-        }
-
-        const editor = document.getElementById('editor');
-        editor.addEventListener('focus', function (e) {
-            if (editor.textContent === 'Start typing here...') {
-                editor.textContent = '';
-            }
-        }, { once: true });
-
-        function setPageBreak() {
-            const pageHeight = parseInt(document.getElementById('pageHeight').value);
-            const editor = document.getElementById('editor');
-            // TODO: implement page break
-        }
-    </script>
+    <script src="editor.js"></script>
 <script defer="" src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;c326e5c2c75441d993469e85607d3220&quot;,&quot;r&quot;:1,&quot;server_timing&quot;:{&quot;name&quot;:{&quot;cfCacheStatus&quot;:true,&quot;cfEdge&quot;:true,&quot;cfExtPri&quot;:true,&quot;cfL4&quot;:true,&quot;cfOrigin&quot;:true,&quot;cfSpeedBrain&quot;:true},&quot;location_startswith&quot;:null}}" crossorigin="anonymous"></script>
 
 
