@@ -58,7 +58,7 @@ function setPageBreak() {
         return;
     }
 
-    const { totalPages } = window.EditorModules.pagination.applyPageBreaks(editorElement, pageHeight);
+    const { totalPages, pageSummaries } = window.EditorModules.pagination.applyPageBreaks(editorElement, pageHeight);
 
     const typedBlocks = window.EditorModules.blockTypes.getEditorBlocksWithTypes(editorElement);
     console.table(
@@ -69,6 +69,8 @@ function setPageBreak() {
             height: Math.round(block.element.getBoundingClientRect().height)
         }))
     );
+
+    console.table(pageSummaries);
 
     alert(`Page breaks applied. Total pages: ${totalPages}`);
 }

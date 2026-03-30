@@ -10,6 +10,8 @@ function cloneEmptyBlockLike(blockElement) {
     const clone = blockElement.cloneNode(false);
     clone.removeAttribute('data-page-index');
     clone.classList.remove('page-break-before');
+    delete clone.dataset.paginationSplitType;
+    delete clone.dataset.paginationSplitGroup;
     return clone;
 }
 
@@ -27,6 +29,10 @@ function isMeaningfulNode(node) {
 
 function getSingleDirectTable(block) {
     return window.EditorModules.tableSplit.getSingleDirectTable(block);
+}
+
+function getSingleDirectImage(block) {
+    return window.EditorModules.imageSplit.getSingleDirectImage(block);
 }
 
 function getSingleDirectList(block) {
@@ -233,15 +239,150 @@ function normalizeMixedTableBlocks(editorElement) {
     }
 }
 
+function normalizeMixedImageBlocks(editorElement) {
+    let i = 0;
+    while (i < editorElement.children.length) {
+        const block = editorElement.children[i];
+        if (!(block instanceof HTMLElement)) {
+            i += 1;
+            continue;
+        }
+
+        const directImages = Array.from(block.children).filter((el) => el.tagName === 'IMG');
+        if (directImages.length === 0) {
+            i += 1;
+            continue;
+        }
+
+        const imageEl = directImages[0];
+        const childNodes = Array.from(block.childNodes);
+        const imageIdx = childNodes.indexOf(imageEl);
+        if (imageIdx === -1) {
+            i += 1;
+            continue;
+        }
+
+        const beforeNodes = childNodes.slice(0, imageIdx);
+        const afterNodes = childNodes.slice(imageIdx + 1);
+        const hasBefore = beforeNodes.some(isMeaningfulNode);
+        const hasAfter = afterNodes.some(isMeaningfulNode);
+
+        if (!hasBefore && !hasAfter) {
+            i += 1;
+            continue;
+        }
+
+        let afterBlock = null;
+        if (hasBefore) {
+            const beforeBlock = cloneEmptyBlockLike(block);
+            beforeNodes.forEach((n) => beforeBlock.appendChild(n));
+            block.insertAdjacentElement('beforebegin', beforeBlock);
+            i += 1;
+        }
+        if (hasAfter) {
+            afterBlock = cloneEmptyBlockLike(block);
+            afterNodes.forEach((n) => afterBlock.appendChild(n));
+            block.insertAdjacentElement('afterend', afterBlock);
+        }
+
+        Array.from(block.childNodes).forEach((n) => {
+            if (n !== imageEl) n.remove();
+        });
+
+        if (!afterBlock) {
+            i += 1;
+        }
+    }
+}
+
+let paragraphSplitGroupCounter = 0;
+
+function nextParagraphSplitGroupId() {
+    paragraphSplitGroupCounter += 1;
+    return `paragraph-split-${paragraphSplitGroupCounter}`;
+}
+
+function markParagraphSplitBlocks(currentBlock, remainderBlock) {
+    const existingGroupId =
+        currentBlock.dataset.paginationSplitType === 'paragraph' ? currentBlock.dataset.paginationSplitGroup : '';
+    const groupId = existingGroupId || nextParagraphSplitGroupId();
+
+    currentBlock.dataset.paginationSplitType = 'paragraph';
+    currentBlock.dataset.paginationSplitGroup = groupId;
+    remainderBlock.dataset.paginationSplitType = 'paragraph';
+    remainderBlock.dataset.paginationSplitGroup = groupId;
+}
+
+function canMergeParagraphSplitBlocks(currentBlock, nextBlock) {
+    if (!(currentBlock instanceof HTMLElement) || !(nextBlock instanceof HTMLElement)) {
+        return false;
+    }
+
+    return (
+        currentBlock.dataset.paginationSplitType === 'paragraph' &&
+        nextBlock.dataset.paginationSplitType === 'paragraph' &&
+        currentBlock.dataset.paginationSplitGroup &&
+        currentBlock.dataset.paginationSplitGroup === nextBlock.dataset.paginationSplitGroup
+    );
+}
+
+function mergeAdjacentParagraphSplitBlocks(editorElement) {
+    let i = 0;
+    while (i < editorElement.children.length - 1) {
+        const currentBlock = editorElement.children[i];
+        const nextBlock = editorElement.children[i + 1];
+
+        if (!canMergeParagraphSplitBlocks(currentBlock, nextBlock)) {
+            i += 1;
+            continue;
+        }
+
+        Array.from(nextBlock.childNodes).forEach((node) => currentBlock.appendChild(node));
+        nextBlock.remove();
+        // Keep same index to merge multi-page paragraph fragments back into one block.
+    }
+}
+
+function createPageSummary(pageIndex) {
+    return {
+        pageIndex,
+        height: 0,
+        blockCount: 0,
+        blockTypes: [],
+        oversizedContent: false
+    };
+}
+
+function ensurePageSummary(pageSummaries, pageIndex) {
+    const summaryIndex = pageIndex - 1;
+    if (!pageSummaries[summaryIndex]) {
+        pageSummaries[summaryIndex] = createPageSummary(pageIndex);
+    }
+    return pageSummaries[summaryIndex];
+}
+
+function recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries) {
+    block.dataset.pageIndex = String(pageIndex);
+    const pageSummary = ensurePageSummary(pageSummaries, pageIndex);
+    pageSummary.height = currentPageHeight;
+    pageSummary.blockCount += 1;
+    pageSummary.blockTypes.push(type);
+    return pageSummary;
+}
+
 function applyPageBreaks(editorElement, pageHeight) {
+    mergeAdjacentParagraphSplitBlocks(editorElement);
     mergeAdjacentTableBlocks(editorElement);
     mergeAdjacentListBlocks(editorElement);
     normalizeMixedTableBlocks(editorElement);
     normalizeMixedListBlocks(editorElement);
+    normalizeMixedImageBlocks(editorElement);
     clearExistingPageBreakMarkers(editorElement);
 
     let pageIndex = 1;
     let currentPageHeight = 0;
+    let forceBreakBeforeNextBlock = false;
+    const pageSummaries = [createPageSummary(pageIndex)];
 
     // Dynamic loop because we may insert blocks while paginating.
     let i = 0;
@@ -249,9 +390,30 @@ function applyPageBreaks(editorElement, pageHeight) {
         const block = editorElement.children[i];
         const type = window.EditorModules.blockTypes.getContentElementType(block);
         const blockHeight = Math.ceil(block.getBoundingClientRect().height);
+        const isEmptyBlock = type === 'empty';
+
+        if (forceBreakBeforeNextBlock) {
+            if (isEmptyBlock) {
+                block.remove();
+                continue;
+            }
+
+            pageIndex += 1;
+            currentPageHeight = 0;
+            block.classList.add('page-break-before');
+            forceBreakBeforeNextBlock = false;
+            if (!pageSummaries[pageIndex - 1]) {
+                pageSummaries[pageIndex - 1] = createPageSummary(pageIndex);
+            }
+        }
 
         const remaining = pageHeight - currentPageHeight;
         const wouldOverflow = currentPageHeight > 0 && currentPageHeight + blockHeight > pageHeight;
+
+        if (wouldOverflow && isEmptyBlock) {
+            block.remove();
+            continue;
+        }
 
         if (wouldOverflow) {
             if (type === 'paragraph') {
@@ -261,12 +423,15 @@ function applyPageBreaks(editorElement, pageHeight) {
                     remaining
                 );
                 if (remainderBlock) {
+                    markParagraphSplitBlocks(block, remainderBlock);
+                    currentPageHeight += Math.ceil(block.getBoundingClientRect().height);
+                    recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries);
+
                     // Insert remainder as the next block; it starts on a new page.
                     block.insertAdjacentElement('afterend', remainderBlock);
                     remainderBlock.classList.add('page-break-before');
                     pageIndex += 1;
                     currentPageHeight = 0;
-                    remainderBlock.dataset.pageIndex = String(pageIndex);
                     // Move on to the remainder block (top of next page).
                     i += 1;
                     continue;
@@ -279,11 +444,13 @@ function applyPageBreaks(editorElement, pageHeight) {
                     remaining
                 );
                 if (remainderBlock) {
+                    currentPageHeight += Math.ceil(block.getBoundingClientRect().height);
+                    recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries);
+
                     block.insertAdjacentElement('afterend', remainderBlock);
                     remainderBlock.classList.add('page-break-before');
                     pageIndex += 1;
                     currentPageHeight = 0;
-                    remainderBlock.dataset.pageIndex = String(pageIndex);
                     i += 1;
                     continue;
                 }
@@ -295,11 +462,13 @@ function applyPageBreaks(editorElement, pageHeight) {
                     remaining
                 );
                 if (remainderBlock) {
+                    currentPageHeight += Math.ceil(block.getBoundingClientRect().height);
+                    recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries);
+
                     block.insertAdjacentElement('afterend', remainderBlock);
                     remainderBlock.classList.add('page-break-before');
                     pageIndex += 1;
                     currentPageHeight = 0;
-                    remainderBlock.dataset.pageIndex = String(pageIndex);
                     i += 1;
                     continue;
                 }
@@ -311,16 +480,34 @@ function applyPageBreaks(editorElement, pageHeight) {
             block.classList.add('page-break-before');
         }
 
-        block.dataset.pageIndex = String(pageIndex);
         currentPageHeight += Math.ceil(block.getBoundingClientRect().height);
+        const currentPageSummary = recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries);
+
+        // Oversized images keep original size and occupy their own page;
+        // force the following block to start on a fresh page.
+        if (type === 'image' && blockHeight > pageHeight) {
+            forceBreakBeforeNextBlock = true;
+            currentPageSummary.oversizedContent = true;
+        }
+
         i += 1;
     }
 
-    return { totalPages: pageIndex };
+    return {
+        totalPages: pageIndex,
+        pageSummaries: pageSummaries.map((summary) => ({
+            pageIndex: summary.pageIndex,
+            height: summary.height,
+            limit: pageHeight,
+            deltaFromLimit: summary.height - pageHeight,
+            blockCount: summary.blockCount,
+            blockTypes: summary.blockTypes.join(', '),
+            oversizedContent: summary.oversizedContent
+        }))
+    };
 }
 
 window.EditorModules = window.EditorModules || {};
 window.EditorModules.pagination = {
     applyPageBreaks
 };
-

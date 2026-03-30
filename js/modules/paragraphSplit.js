@@ -134,6 +134,7 @@ function extractFromCharOffset(blockElement, charOffset) {
 function splitParagraphBlockToFit(editorElement, blockElement, maxHeightPx) {
     const text = getConcatenatedText(blockElement);
     const fullLen = totalTextLength(blockElement);
+    const originalHtml = blockElement.innerHTML;
     if (fullLen <= 1) return null;
 
     // If even a tiny amount can't fit, signal "can't split meaningfully".
@@ -173,13 +174,13 @@ function splitParagraphBlockToFit(editorElement, blockElement, maxHeightPx) {
     const remainderBlock = blockElement.cloneNode(false);
     remainderBlock.appendChild(remainderFragment);
 
-    // If original becomes empty, keep it as a blank line.
-    if (!blockElement.textContent || blockElement.textContent.trim().length === 0) {
-        blockElement.replaceChildren(document.createElement('br'));
-    }
+    const currentText = blockElement.textContent ? blockElement.textContent.trim() : '';
+    const remainderText = remainderBlock.textContent ? remainderBlock.textContent.trim() : '';
 
-    // If remainder is empty, skip creating it.
-    if (!remainderBlock.textContent || remainderBlock.textContent.trim().length === 0) {
+    // Reject splits that only preserve formatting whitespace on either side.
+    // In those cases the whole paragraph should move to the next page instead.
+    if (!currentText || !remainderText) {
+        blockElement.innerHTML = originalHtml;
         return null;
     }
 
@@ -190,4 +191,3 @@ window.EditorModules = window.EditorModules || {};
 window.EditorModules.paragraphSplit = {
     splitParagraphBlockToFit
 };
-
