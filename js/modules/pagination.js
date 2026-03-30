@@ -25,6 +25,10 @@ function isMeaningfulNode(node) {
     return false;
 }
 
+function getSingleDirectTable(block) {
+    return window.EditorModules.tableSplit.getSingleDirectTable(block);
+}
+
 function getSingleDirectList(block) {
     const nonBrChildren = Array.from(block.children).filter((el) => el.tagName !== 'BR');
     if (nonBrChildren.length !== 1) return null;
@@ -66,6 +70,42 @@ function mergeAdjacentListBlocks(editorElement) {
         Array.from(nextList.children).forEach((child) => currentList.appendChild(child));
         nextBlock.remove();
         // Keep same index to merge multiple following list fragments.
+    }
+}
+
+function canMergeTables(currentTable, nextTable) {
+    if (!currentTable || !nextTable) return false;
+    if (currentTable.className !== nextTable.className) return false;
+    if ((currentTable.getAttribute('style') || '') !== (nextTable.getAttribute('style') || '')) return false;
+    if ((currentTable.getAttribute('border') || '') !== (nextTable.getAttribute('border') || '')) return false;
+    return true;
+}
+
+function mergeAdjacentTableBlocks(editorElement) {
+    let i = 0;
+    while (i < editorElement.children.length - 1) {
+        const currentBlock = editorElement.children[i];
+        const nextBlock = editorElement.children[i + 1];
+        const currentTable = getSingleDirectTable(currentBlock);
+        const nextTable = getSingleDirectTable(nextBlock);
+
+        if (!canMergeTables(currentTable, nextTable)) {
+            i += 1;
+            continue;
+        }
+
+        const nextRows = window.EditorModules.tableSplit.getDirectBodyRows(nextTable);
+        if (nextRows.length === 0) {
+            nextBlock.remove();
+            continue;
+        }
+
+        let targetContainer = currentTable.tBodies && currentTable.tBodies.length > 0
+            ? currentTable.tBodies[currentTable.tBodies.length - 1]
+            : currentTable;
+
+        nextRows.forEach((row) => targetContainer.appendChild(row));
+        nextBlock.remove();
     }
 }
 
@@ -137,8 +177,66 @@ function normalizeMixedListBlocks(editorElement) {
     }
 }
 
+function normalizeMixedTableBlocks(editorElement) {
+    let i = 0;
+    while (i < editorElement.children.length) {
+        const block = editorElement.children[i];
+        if (!(block instanceof HTMLElement)) {
+            i += 1;
+            continue;
+        }
+
+        const directTables = Array.from(block.children).filter((el) => el.tagName === 'TABLE');
+        if (directTables.length === 0) {
+            i += 1;
+            continue;
+        }
+
+        const tableEl = directTables[0];
+        const childNodes = Array.from(block.childNodes);
+        const tableIdx = childNodes.indexOf(tableEl);
+        if (tableIdx === -1) {
+            i += 1;
+            continue;
+        }
+
+        const beforeNodes = childNodes.slice(0, tableIdx);
+        const afterNodes = childNodes.slice(tableIdx + 1);
+        const hasBefore = beforeNodes.some(isMeaningfulNode);
+        const hasAfter = afterNodes.some(isMeaningfulNode);
+
+        if (!hasBefore && !hasAfter) {
+            i += 1;
+            continue;
+        }
+
+        let afterBlock = null;
+        if (hasBefore) {
+            const beforeBlock = cloneEmptyBlockLike(block);
+            beforeNodes.forEach((n) => beforeBlock.appendChild(n));
+            block.insertAdjacentElement('beforebegin', beforeBlock);
+            i += 1;
+        }
+        if (hasAfter) {
+            afterBlock = cloneEmptyBlockLike(block);
+            afterNodes.forEach((n) => afterBlock.appendChild(n));
+            block.insertAdjacentElement('afterend', afterBlock);
+        }
+
+        Array.from(block.childNodes).forEach((n) => {
+            if (n !== tableEl) n.remove();
+        });
+
+        if (!afterBlock) {
+            i += 1;
+        }
+    }
+}
+
 function applyPageBreaks(editorElement, pageHeight) {
+    mergeAdjacentTableBlocks(editorElement);
     mergeAdjacentListBlocks(editorElement);
+    normalizeMixedTableBlocks(editorElement);
     normalizeMixedListBlocks(editorElement);
     clearExistingPageBreakMarkers(editorElement);
 
@@ -176,6 +274,22 @@ function applyPageBreaks(editorElement, pageHeight) {
             }
             if (type === 'list') {
                 const remainderBlock = window.EditorModules.listSplit.splitListBlockToFit(
+                    editorElement,
+                    block,
+                    remaining
+                );
+                if (remainderBlock) {
+                    block.insertAdjacentElement('afterend', remainderBlock);
+                    remainderBlock.classList.add('page-break-before');
+                    pageIndex += 1;
+                    currentPageHeight = 0;
+                    remainderBlock.dataset.pageIndex = String(pageIndex);
+                    i += 1;
+                    continue;
+                }
+            }
+            if (type === 'table') {
+                const remainderBlock = window.EditorModules.tableSplit.splitTableBlockToFit(
                     editorElement,
                     block,
                     remaining
