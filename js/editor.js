@@ -50,11 +50,12 @@ function insertImage() {
 }
 
 function setPageBreak() {
+    const minPageHeight = 100;
     const pageHeight = parseInt(document.getElementById('pageHeight').value, 10);
     const editorElement = document.getElementById('editor');
 
-    if (Number.isNaN(pageHeight) || pageHeight <= 0) {
-        alert('Please enter a valid page height in pixels.');
+    if (Number.isNaN(pageHeight) || pageHeight < minPageHeight) {
+        alert(`For meaningful and clear results, please keep the page height at ${minPageHeight}px or more.`);
         return;
     }
 
