@@ -39,6 +39,15 @@ function setMeasureWidth(measureHost, editorElement) {
 function measureHeightForClone(editorElement, blockClone) {
     const host = ensureMeasureHost(editorElement);
     setMeasureWidth(host, editorElement);
+
+    if (blockClone.classList.contains('page-break-before')) {
+        // The live editor styles page-break blocks via `#editor .page-break-before`,
+        // which does not apply inside the detached measure host.
+        blockClone.style.borderTop = '2px dashed transparent';
+        blockClone.style.paddingTop = '18px';
+        blockClone.style.position = 'relative';
+    }
+
     host.replaceChildren(blockClone);
     return Math.ceil(blockClone.getBoundingClientRect().height);
 }
