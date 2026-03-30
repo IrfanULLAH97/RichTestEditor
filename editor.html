@@ -16,6 +16,24 @@
             margin-top: 10px;
         }
 
+        #editor .page-break-before {
+            border-top: 2px dashed #3b82f6;
+            margin-top: 18px;
+            padding-top: 18px;
+            position: relative;
+        }
+
+        #editor .page-break-before::before {
+            content: "Page break";
+            position: absolute;
+            top: -12px;
+            right: 8px;
+            padding: 0 6px;
+            font-size: 11px;
+            color: #3b82f6;
+            background: #fff;
+        }
+
         .toolbar {
             background-color: #f5f5f5;
             padding: 10px;
@@ -190,7 +208,10 @@
         </div>
     </div>
 
-    <script src="editor.js"></script>
+    <script src="js/modules/blockTypes.js"></script>
+    <script src="js/modules/paragraphSplit.js"></script>
+    <script src="js/modules/pagination.js"></script>
+    <script src="js/editor.js"></script>
 <script defer="" src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;c326e5c2c75441d993469e85607d3220&quot;,&quot;r&quot;:1,&quot;server_timing&quot;:{&quot;name&quot;:{&quot;cfCacheStatus&quot;:true,&quot;cfEdge&quot;:true,&quot;cfExtPri&quot;:true,&quot;cfL4&quot;:true,&quot;cfOrigin&quot;:true,&quot;cfSpeedBrain&quot;:true},&quot;location_startswith&quot;:null}}" crossorigin="anonymous"></script>
 
 
