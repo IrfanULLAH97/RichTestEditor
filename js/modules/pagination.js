@@ -391,6 +391,7 @@ function applyPageBreaks(editorElement, pageHeight) {
         const type = window.EditorModules.blockTypes.getContentElementType(block);
         const blockHeight = Math.ceil(block.getBoundingClientRect().height);
         const isEmptyBlock = type === 'empty';
+        const isSplittableType = type === 'paragraph' || type === 'list' || type === 'table';
 
         if (forceBreakBeforeNextBlock) {
             if (isEmptyBlock) {
@@ -408,14 +409,16 @@ function applyPageBreaks(editorElement, pageHeight) {
         }
 
         const remaining = pageHeight - currentPageHeight;
-        const wouldOverflow = currentPageHeight > 0 && currentPageHeight + blockHeight > pageHeight;
+        const wouldOverflowCurrentPage = currentPageHeight > 0 && currentPageHeight + blockHeight > pageHeight;
+        const wouldOverflowFreshPage = currentPageHeight === 0 && isSplittableType && blockHeight > pageHeight;
+        const shouldTrySplitOrMove = wouldOverflowCurrentPage || wouldOverflowFreshPage;
 
-        if (wouldOverflow && isEmptyBlock) {
+        if (wouldOverflowCurrentPage && isEmptyBlock) {
             block.remove();
             continue;
         }
 
-        if (wouldOverflow) {
+        if (shouldTrySplitOrMove) {
             if (type === 'paragraph') {
                 const remainderBlock = window.EditorModules.paragraphSplit.splitParagraphBlockToFit(
                     editorElement,
@@ -474,10 +477,15 @@ function applyPageBreaks(editorElement, pageHeight) {
                 }
             }
 
-            // Default: move whole block to next page.
-            pageIndex += 1;
-            currentPageHeight = 0;
-            block.classList.add('page-break-before');
+            if (wouldOverflowCurrentPage) {
+                // Default: move whole block to next page.
+                pageIndex += 1;
+                currentPageHeight = 0;
+                block.classList.add('page-break-before');
+                // Re-evaluate this same block on a fresh page so splittable
+                // content gets a chance to split against the full page height.
+                continue;
+            }
         }
 
         currentPageHeight += Math.ceil(block.getBoundingClientRect().height);
