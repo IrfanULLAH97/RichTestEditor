@@ -140,6 +140,154 @@ function extractFromCharOffset(blockElement, charOffset) {
     return range.extractContents();
 }
 
+function findTextNodePosition(root, charOffset) {
+    const textNodes = getTextNodes(root);
+    let remaining = charOffset;
+
+    for (const node of textNodes) {
+        const len = node.nodeValue ? node.nodeValue.length : 0;
+        if (remaining <= len) {
+            return {
+                node,
+                offset: remaining
+            };
+        }
+        remaining -= len;
+    }
+
+    const lastNode = textNodes[textNodes.length - 1];
+    if (!lastNode) return null;
+
+    return {
+        node: lastNode,
+        offset: lastNode.nodeValue ? lastNode.nodeValue.length : 0
+    };
+}
+
+function extractCharRange(blockElement, startCharOffset, endCharOffset) {
+    if (endCharOffset <= startCharOffset) {
+        return null;
+    }
+
+    const startPosition = findTextNodePosition(blockElement, startCharOffset);
+    const endPosition = findTextNodePosition(blockElement, endCharOffset);
+
+    if (!startPosition || !endPosition) {
+        return null;
+    }
+
+    const range = document.createRange();
+    range.setStart(startPosition.node, startPosition.offset);
+    range.setEnd(endPosition.node, endPosition.offset);
+    return range.extractContents();
+}
+
+function getLeadingWordBoundary(text) {
+    const firstNonWhitespaceIndex = text.search(/\S/);
+    if (firstNonWhitespaceIndex === -1) {
+        return null;
+    }
+
+    let wordEndIndex = firstNonWhitespaceIndex;
+    while (wordEndIndex < text.length && !/\s/.test(text[wordEndIndex])) {
+        wordEndIndex += 1;
+    }
+
+    return {
+        firstNonWhitespaceIndex,
+        wordEndIndex
+    };
+}
+
+function buildLeadingWordTransfer(editorElement, previousBlock, currentBlock) {
+    const currentText = getConcatenatedText(currentBlock);
+    const boundary = getLeadingWordBoundary(currentText);
+    if (!boundary) return null;
+
+    const previousText = getConcatenatedText(previousBlock);
+    const previousEndsWithWhitespace = /\s$/.test(previousText);
+    const shouldTrimLeadingWhitespace = previousEndsWithWhitespace && boundary.firstNonWhitespaceIndex > 0;
+    const extractStart = shouldTrimLeadingWhitespace ? boundary.firstNonWhitespaceIndex : 0;
+    const extractEnd = boundary.wordEndIndex;
+
+    const fragmentForMeasure = extractCharRange(
+        currentBlock.cloneNode(true),
+        extractStart,
+        extractEnd
+    );
+
+    if (!fragmentForMeasure || !fragmentForMeasure.hasChildNodes()) {
+        return null;
+    }
+
+    const fragmentClone = fragmentForMeasure.cloneNode(true);
+    const combinedClone = previousBlock.cloneNode(true);
+    const needsJoinSpace = !previousEndsWithWhitespace && boundary.firstNonWhitespaceIndex === 0;
+
+    if (needsJoinSpace) {
+        combinedClone.appendChild(document.createTextNode(' '));
+    }
+    combinedClone.appendChild(fragmentClone);
+
+    const previousHeight = Math.ceil(previousBlock.getBoundingClientRect().height);
+    const combinedHeight = measureHeightForClone(editorElement, combinedClone);
+
+    return {
+        extractStart,
+        extractEnd,
+        fragmentForMeasure,
+        heightDelta: combinedHeight - previousHeight,
+        needsJoinSpace
+    };
+}
+
+function moveLeadingWordToPreviousBlock(editorElement, previousBlock, currentBlock) {
+    if (!(previousBlock instanceof HTMLElement) || !(currentBlock instanceof HTMLElement)) {
+        return false;
+    }
+
+    const sameSplitGroup =
+        previousBlock.dataset.paginationSplitType === 'paragraph' &&
+        currentBlock.dataset.paginationSplitType === 'paragraph' &&
+        previousBlock.dataset.paginationSplitGroup &&
+        previousBlock.dataset.paginationSplitGroup === currentBlock.dataset.paginationSplitGroup;
+
+    if (!sameSplitGroup) {
+        return false;
+    }
+
+    const spacer = currentBlock.previousElementSibling;
+    if (
+        !(spacer instanceof HTMLElement) ||
+        spacer.dataset.paginationInternal !== 'page-fill-spacer'
+    ) {
+        return false;
+    }
+
+    const transfer = buildLeadingWordTransfer(editorElement, previousBlock, currentBlock);
+    if (!transfer) {
+        return false;
+    }
+
+    // Let repagination resolve whether the moved word ultimately stays on the
+    // previous page or is pushed back to the next page after reflow.
+    const fragment = extractCharRange(currentBlock, transfer.extractStart, transfer.extractEnd);
+    if (!fragment || !fragment.hasChildNodes()) {
+        return false;
+    }
+
+    if (transfer.needsJoinSpace) {
+        previousBlock.appendChild(document.createTextNode(' '));
+    }
+    previousBlock.appendChild(fragment);
+
+    if (!currentBlock.textContent || currentBlock.textContent.trim().length === 0) {
+        currentBlock.innerHTML = '<br>';
+    }
+
+    return true;
+}
+
 function splitParagraphBlockToFit(editorElement, blockElement, maxHeightPx) {
     const text = getConcatenatedText(blockElement);
     const fullLen = totalTextLength(blockElement);
@@ -182,6 +330,15 @@ function splitParagraphBlockToFit(editorElement, blockElement, maxHeightPx) {
 
     const remainderBlock = blockElement.cloneNode(false);
     remainderBlock.appendChild(remainderFragment);
+    const trailingBoundaryCharacter = text[safeBest - 1] || '';
+    const leadingBoundaryCharacter = text[safeBest] || '';
+    const boundaryHasSpace =
+        /\s/.test(trailingBoundaryCharacter) ||
+        /\s/.test(leadingBoundaryCharacter);
+    remainderBlock.dataset.paginationBoundarySpaceBefore = boundaryHasSpace ? 'true' : 'false';
+    if (blockElement.dataset.paginationBoundaryEdited === 'true') {
+        remainderBlock.dataset.paginationBoundaryEdited = 'true';
+    }
 
     const currentText = blockElement.textContent ? blockElement.textContent.trim() : '';
     const remainderText = remainderBlock.textContent ? remainderBlock.textContent.trim() : '';
@@ -198,5 +355,6 @@ function splitParagraphBlockToFit(editorElement, blockElement, maxHeightPx) {
 
 window.EditorModules = window.EditorModules || {};
 window.EditorModules.paragraphSplit = {
-    splitParagraphBlockToFit
+    splitParagraphBlockToFit,
+    moveLeadingWordToPreviousBlock
 };

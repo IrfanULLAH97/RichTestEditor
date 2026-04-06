@@ -6,12 +6,20 @@ function clearExistingPageBreakMarkers(editorElement) {
     });
 }
 
+function removePageFillSpacers(editorElement) {
+    Array.from(editorElement.querySelectorAll('[data-pagination-internal="page-fill-spacer"]'))
+        .filter((block) => block instanceof HTMLElement)
+        .forEach((block) => block.remove());
+}
+
 function cloneEmptyBlockLike(blockElement) {
     const clone = blockElement.cloneNode(false);
     clone.removeAttribute('data-page-index');
     clone.classList.remove('page-break-before');
     delete clone.dataset.paginationSplitType;
     delete clone.dataset.paginationSplitGroup;
+    delete clone.dataset.paginationBoundarySpaceBefore;
+    delete clone.dataset.paginationBoundaryEdited;
     return clone;
 }
 
@@ -35,6 +43,14 @@ function getSingleDirectImage(block) {
     return window.EditorModules.imageSplit.getSingleDirectImage(block);
 }
 
+function getImageOnlyDirectChildHost(block) {
+    return window.EditorModules.imageSplit.getDirectImageHost(block);
+}
+
+function getDirectImageHosts(block) {
+    return window.EditorModules.imageSplit.getDirectImageHosts(block);
+}
+
 function getSingleDirectList(block) {
     const nonBrChildren = Array.from(block.children).filter((el) => el.tagName !== 'BR');
     if (nonBrChildren.length !== 1) return null;
@@ -49,12 +65,67 @@ function getSingleDirectList(block) {
     return onlyChild;
 }
 
+function blocksWereSeparatedByPageBoundary(currentBlock, nextBlock) {
+    if (!(currentBlock instanceof HTMLElement) || !(nextBlock instanceof HTMLElement)) {
+        return false;
+    }
+
+    if (nextBlock.classList.contains('page-break-before')) {
+        return true;
+    }
+
+    const currentPageIndex = Number(currentBlock.dataset.pageIndex);
+    const nextPageIndex = Number(nextBlock.dataset.pageIndex);
+
+    return (
+        Number.isFinite(currentPageIndex) &&
+        Number.isFinite(nextPageIndex) &&
+        currentPageIndex !== nextPageIndex
+    );
+}
+
 function canMergeLists(currentList, nextList) {
     if (!currentList || !nextList) return false;
     if (currentList.tagName !== nextList.tagName) return false;
     if (currentList.className !== nextList.className) return false;
     if ((currentList.getAttribute('style') || '') !== (nextList.getAttribute('style') || '')) return false;
     return true;
+}
+
+function clearListItemSplitMetadata(listItem) {
+    if (!(listItem instanceof HTMLLIElement)) {
+        return;
+    }
+
+    delete listItem.dataset.paginationSplitType;
+    delete listItem.dataset.paginationSplitGroup;
+    delete listItem.dataset.paginationSplitContinuation;
+    listItem.style.removeProperty('list-style-type');
+}
+
+function mergeListItemContinuationIfNeeded(currentList, nextList) {
+    const currentItems = window.EditorModules.listSplit.getDirectListItems(currentList);
+    const nextItems = window.EditorModules.listSplit.getDirectListItems(nextList);
+    const lastCurrentItem = currentItems[currentItems.length - 1];
+    const firstNextItem = nextItems[0];
+
+    if (!(lastCurrentItem instanceof HTMLLIElement) || !(firstNextItem instanceof HTMLLIElement)) {
+        return;
+    }
+
+    const sameSplitGroup =
+        lastCurrentItem.dataset.paginationSplitType === 'list-item' &&
+        firstNextItem.dataset.paginationSplitType === 'list-item' &&
+        lastCurrentItem.dataset.paginationSplitGroup &&
+        lastCurrentItem.dataset.paginationSplitGroup === firstNextItem.dataset.paginationSplitGroup;
+
+    if (!sameSplitGroup || firstNextItem.dataset.paginationSplitContinuation !== 'true') {
+        return;
+    }
+
+    Array.from(firstNextItem.childNodes).forEach((node) => lastCurrentItem.appendChild(node));
+    clearListItemSplitMetadata(lastCurrentItem);
+    firstNextItem.remove();
 }
 
 // When page height changes, previously split lists may stay fragmented.
@@ -68,11 +139,12 @@ function mergeAdjacentListBlocks(editorElement) {
         const currentList = getSingleDirectList(currentBlock);
         const nextList = getSingleDirectList(nextBlock);
 
-        if (!canMergeLists(currentList, nextList)) {
+        if (!canMergeLists(currentList, nextList) || !blocksWereSeparatedByPageBoundary(currentBlock, nextBlock)) {
             i += 1;
             continue;
         }
 
+        mergeListItemContinuationIfNeeded(currentList, nextList);
         Array.from(nextList.children).forEach((child) => currentList.appendChild(child));
         nextBlock.remove();
         // Keep same index to merge multiple following list fragments.
@@ -95,7 +167,7 @@ function mergeAdjacentTableBlocks(editorElement) {
         const currentTable = getSingleDirectTable(currentBlock);
         const nextTable = getSingleDirectTable(nextBlock);
 
-        if (!canMergeTables(currentTable, nextTable)) {
+        if (!canMergeTables(currentTable, nextTable) || !blocksWereSeparatedByPageBoundary(currentBlock, nextBlock)) {
             i += 1;
             continue;
         }
@@ -239,6 +311,57 @@ function normalizeMixedTableBlocks(editorElement) {
     }
 }
 
+function hasMeaningfulDirectTextNode(element) {
+    return Array.from(element.childNodes).some(
+        (n) => n.nodeType === Node.TEXT_NODE && n.textContent && n.textContent.trim().length > 0
+    );
+}
+
+function flattenNestedBlockWrappers(editorElement) {
+    let changed = true;
+
+    while (changed) {
+        changed = false;
+
+        Array.from(editorElement.children).forEach((block) => {
+            if (!(block instanceof HTMLDivElement)) {
+                return;
+            }
+
+            const nonBrChildren = Array.from(block.children).filter((el) => el.tagName !== 'BR');
+            if (nonBrChildren.length !== 1) {
+                return;
+            }
+
+            const onlyChild = nonBrChildren[0];
+            if (!(onlyChild instanceof HTMLDivElement)) {
+                return;
+            }
+
+            if (hasMeaningfulDirectTextNode(block)) {
+                return;
+            }
+
+            // Keep intentionally structured content like lists/tables wrapped in place.
+            if (onlyChild.querySelector('table, ul, ol')) {
+                return;
+            }
+
+            const trailingBrNodes = Array.from(block.childNodes).filter(
+                (node) => node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR'
+            );
+
+            while (onlyChild.firstChild) {
+                block.insertBefore(onlyChild.firstChild, onlyChild);
+            }
+
+            onlyChild.remove();
+            trailingBrNodes.forEach((node) => block.appendChild(node));
+            changed = true;
+        });
+    }
+}
+
 function normalizeMixedImageBlocks(editorElement) {
     let i = 0;
     while (i < editorElement.children.length) {
@@ -248,15 +371,16 @@ function normalizeMixedImageBlocks(editorElement) {
             continue;
         }
 
-        const directImages = Array.from(block.children).filter((el) => el.tagName === 'IMG');
-        if (directImages.length === 0) {
+        const imageHosts = getDirectImageHosts(block);
+        if (imageHosts.length === 0) {
             i += 1;
             continue;
         }
 
-        const imageEl = directImages[0];
+        const imageHost = imageHosts[0];
+
         const childNodes = Array.from(block.childNodes);
-        const imageIdx = childNodes.indexOf(imageEl);
+        const imageIdx = childNodes.indexOf(imageHost);
         if (imageIdx === -1) {
             i += 1;
             continue;
@@ -266,8 +390,9 @@ function normalizeMixedImageBlocks(editorElement) {
         const afterNodes = childNodes.slice(imageIdx + 1);
         const hasBefore = beforeNodes.some(isMeaningfulNode);
         const hasAfter = afterNodes.some(isMeaningfulNode);
+        const hasMultipleImageHosts = imageHosts.length > 1;
 
-        if (!hasBefore && !hasAfter) {
+        if (!hasBefore && !hasAfter && !hasMultipleImageHosts) {
             i += 1;
             continue;
         }
@@ -286,7 +411,7 @@ function normalizeMixedImageBlocks(editorElement) {
         }
 
         Array.from(block.childNodes).forEach((n) => {
-            if (n !== imageEl) n.remove();
+            if (n !== imageHost) n.remove();
         });
 
         if (!afterBlock) {
@@ -322,8 +447,98 @@ function canMergeParagraphSplitBlocks(currentBlock, nextBlock) {
         currentBlock.dataset.paginationSplitType === 'paragraph' &&
         nextBlock.dataset.paginationSplitType === 'paragraph' &&
         currentBlock.dataset.paginationSplitGroup &&
+        currentBlock.dataset.paginationSplitGroup === nextBlock.dataset.paginationSplitGroup &&
+        blocksWereSeparatedByPageBoundary(currentBlock, nextBlock)
+    );
+}
+
+function haveSameParagraphSplitGroup(currentBlock, nextBlock) {
+    if (!(currentBlock instanceof HTMLElement) || !(nextBlock instanceof HTMLElement)) {
+        return false;
+    }
+
+    return (
+        currentBlock.dataset.paginationSplitType === 'paragraph' &&
+        nextBlock.dataset.paginationSplitType === 'paragraph' &&
+        currentBlock.dataset.paginationSplitGroup &&
         currentBlock.dataset.paginationSplitGroup === nextBlock.dataset.paginationSplitGroup
     );
+}
+
+function getTrailingTextCharacter(block) {
+    if (!(block instanceof HTMLElement)) {
+        return '';
+    }
+
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let currentNode = walker.nextNode();
+    while (currentNode) {
+        textNodes.push(currentNode);
+        currentNode = walker.nextNode();
+    }
+
+    for (let i = textNodes.length - 1; i >= 0; i -= 1) {
+        const value = textNodes[i].nodeValue || '';
+        if (value.length > 0) {
+            return value[value.length - 1];
+        }
+    }
+
+    return '';
+}
+
+function getLeadingTextCharacter(block) {
+    if (!(block instanceof HTMLElement)) {
+        return '';
+    }
+
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let currentNode = walker.nextNode();
+    while (currentNode) {
+        const value = currentNode.nodeValue || '';
+        if (value.length > 0) {
+            return value[0];
+        }
+        currentNode = walker.nextNode();
+    }
+
+    return '';
+}
+
+function mergeParagraphSplitBlockContents(currentBlock, nextBlock) {
+    const trailingCharacter = getTrailingTextCharacter(currentBlock);
+    const leadingCharacter = getLeadingTextCharacter(nextBlock);
+    const boundaryHasSpace = nextBlock.dataset.paginationBoundarySpaceBefore !== 'false';
+    const shouldRestoreBoundarySpace =
+        boundaryHasSpace &&
+        trailingCharacter &&
+        leadingCharacter &&
+        !/\s/.test(trailingCharacter) &&
+        !/\s/.test(leadingCharacter);
+
+    if (shouldRestoreBoundarySpace) {
+        currentBlock.appendChild(document.createTextNode(' '));
+    }
+
+    Array.from(nextBlock.childNodes).forEach((node) => currentBlock.appendChild(node));
+    if (nextBlock.dataset.paginationBoundaryEdited === 'true') {
+        currentBlock.dataset.paginationBoundaryEdited = 'true';
+    }
+}
+
+function mergeParagraphSplitRemainderIntoFollowingBlock(remainderBlock, nextBlock) {
+    if (!(remainderBlock instanceof HTMLElement) || !(nextBlock instanceof HTMLElement)) {
+        return remainderBlock;
+    }
+
+    if (!haveSameParagraphSplitGroup(remainderBlock, nextBlock)) {
+        return remainderBlock;
+    }
+
+    mergeParagraphSplitBlockContents(remainderBlock, nextBlock);
+    nextBlock.replaceWith(remainderBlock);
+    return remainderBlock;
 }
 
 function mergeAdjacentParagraphSplitBlocks(editorElement) {
@@ -337,10 +552,23 @@ function mergeAdjacentParagraphSplitBlocks(editorElement) {
             continue;
         }
 
-        Array.from(nextBlock.childNodes).forEach((node) => currentBlock.appendChild(node));
+        mergeParagraphSplitBlockContents(currentBlock, nextBlock);
         nextBlock.remove();
         // Keep same index to merge multi-page paragraph fragments back into one block.
     }
+}
+
+function clearParagraphSplitMarkers(editorElement) {
+    Array.from(editorElement.children).forEach((block) => {
+        if (!(block instanceof HTMLElement)) {
+            return;
+        }
+
+        delete block.dataset.paginationSplitType;
+        delete block.dataset.paginationSplitGroup;
+        delete block.dataset.paginationBoundarySpaceBefore;
+        delete block.dataset.paginationBoundaryEdited;
+    });
 }
 
 function createPageSummary(pageIndex) {
@@ -349,7 +577,8 @@ function createPageSummary(pageIndex) {
         height: 0,
         blockCount: 0,
         blockTypes: [],
-        oversizedContent: false
+        oversizedContent: false,
+        firstBlock: null
     };
 }
 
@@ -364,24 +593,85 @@ function ensurePageSummary(pageSummaries, pageIndex) {
 function recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries) {
     block.dataset.pageIndex = String(pageIndex);
     const pageSummary = ensurePageSummary(pageSummaries, pageIndex);
+    if (!pageSummary.firstBlock) {
+        pageSummary.firstBlock = block;
+    }
     pageSummary.height = currentPageHeight;
     pageSummary.blockCount += 1;
     pageSummary.blockTypes.push(type);
     return pageSummary;
 }
 
-function applyPageBreaks(editorElement, pageHeight) {
-    mergeAdjacentParagraphSplitBlocks(editorElement);
+function createPageFillSpacer(heightPx, pageIndex) {
+    const spacer = document.createElement('div');
+    spacer.className = 'page-fill-spacer';
+    spacer.dataset.paginationInternal = 'page-fill-spacer';
+    spacer.dataset.pageIndex = String(pageIndex);
+    spacer.contentEditable = 'false';
+    spacer.style.height = `${Math.max(0, Math.ceil(heightPx))}px`;
+    return spacer;
+}
+
+function applyFixedPageHeightSpacers(editorElement, pageSummaries, pageHeight) {
+    pageSummaries.forEach((pageSummary, summaryIndex) => {
+        if (summaryIndex === 0) {
+            return;
+        }
+
+        const block = pageSummary.firstBlock;
+        if (!(block instanceof HTMLElement)) {
+            return;
+        }
+
+        const previousPageSummary = pageSummaries[summaryIndex - 1];
+        if (!previousPageSummary) {
+            return;
+        }
+
+        const spacerHeight = Math.max(0, pageHeight - previousPageSummary.height);
+        if (spacerHeight <= 0) {
+            return;
+        }
+
+        block.insertAdjacentElement(
+            'beforebegin',
+            createPageFillSpacer(spacerHeight, previousPageSummary.pageIndex)
+        );
+    });
+
+    const lastPageSummary = pageSummaries[pageSummaries.length - 1];
+    if (!lastPageSummary) {
+        return;
+    }
+
+    const lastPageSpacerHeight = Math.max(0, pageHeight - lastPageSummary.height);
+    if (lastPageSpacerHeight <= 0) {
+        return;
+    }
+
+    editorElement.appendChild(createPageFillSpacer(lastPageSpacerHeight, lastPageSummary.pageIndex));
+}
+
+function applyPageBreaks(editorElement, pageHeight, options) {
+    const { preserveParagraphSplitBoundaries = false } = options || {};
+
+    removePageFillSpacers(editorElement);
+    if (!preserveParagraphSplitBoundaries) {
+        mergeAdjacentParagraphSplitBlocks(editorElement);
+        clearParagraphSplitMarkers(editorElement);
+    }
     mergeAdjacentTableBlocks(editorElement);
     mergeAdjacentListBlocks(editorElement);
     normalizeMixedTableBlocks(editorElement);
     normalizeMixedListBlocks(editorElement);
+    flattenNestedBlockWrappers(editorElement);
     normalizeMixedImageBlocks(editorElement);
     clearExistingPageBreakMarkers(editorElement);
 
     let pageIndex = 1;
     let currentPageHeight = 0;
     let forceBreakBeforeNextBlock = false;
+    let pendingPageBreak = false;
     const pageSummaries = [createPageSummary(pageIndex)];
 
     // Dynamic loop because we may insert blocks while paginating.
@@ -389,34 +679,31 @@ function applyPageBreaks(editorElement, pageHeight) {
     while (i < editorElement.children.length) {
         const block = editorElement.children[i];
         const type = window.EditorModules.blockTypes.getContentElementType(block);
-        const blockHeight = Math.ceil(block.getBoundingClientRect().height);
         const isEmptyBlock = type === 'empty';
         const isSplittableType = type === 'paragraph' || type === 'list' || type === 'table';
+        const canHostPageBreakMarker = !(block instanceof HTMLBRElement);
 
         if (forceBreakBeforeNextBlock) {
-            if (isEmptyBlock) {
-                block.remove();
-                continue;
-            }
-
             pageIndex += 1;
             currentPageHeight = 0;
-            block.classList.add('page-break-before');
             forceBreakBeforeNextBlock = false;
+            pendingPageBreak = true;
             if (!pageSummaries[pageIndex - 1]) {
                 pageSummaries[pageIndex - 1] = createPageSummary(pageIndex);
             }
         }
 
+        if (pendingPageBreak && canHostPageBreakMarker) {
+            block.classList.add('page-break-before');
+            pendingPageBreak = false;
+        }
+
+        const blockHeight = Math.ceil(block.getBoundingClientRect().height);
+
         const remaining = pageHeight - currentPageHeight;
         const wouldOverflowCurrentPage = currentPageHeight > 0 && currentPageHeight + blockHeight > pageHeight;
         const wouldOverflowFreshPage = currentPageHeight === 0 && isSplittableType && blockHeight > pageHeight;
         const shouldTrySplitOrMove = wouldOverflowCurrentPage || wouldOverflowFreshPage;
-
-        if (wouldOverflowCurrentPage && isEmptyBlock) {
-            block.remove();
-            continue;
-        }
 
         if (shouldTrySplitOrMove) {
             if (type === 'paragraph') {
@@ -430,11 +717,19 @@ function applyPageBreaks(editorElement, pageHeight) {
                     currentPageHeight += Math.ceil(block.getBoundingClientRect().height);
                     recordBlockOnPage(block, type, pageIndex, currentPageHeight, pageSummaries);
 
+                    const followingBlock = block.nextElementSibling;
+                    const targetRemainderBlock =
+                        preserveParagraphSplitBoundaries &&
+                        followingBlock instanceof HTMLElement
+                            ? mergeParagraphSplitRemainderIntoFollowingBlock(remainderBlock, followingBlock)
+                            : remainderBlock;
+
                     // Insert remainder as the next block; it starts on a new page.
-                    block.insertAdjacentElement('afterend', remainderBlock);
-                    remainderBlock.classList.add('page-break-before');
+                    block.insertAdjacentElement('afterend', targetRemainderBlock);
+                    targetRemainderBlock.classList.add('page-break-before');
                     pageIndex += 1;
                     currentPageHeight = 0;
+                    pendingPageBreak = false;
                     // Move on to the remainder block (top of next page).
                     i += 1;
                     continue;
@@ -454,6 +749,7 @@ function applyPageBreaks(editorElement, pageHeight) {
                     remainderBlock.classList.add('page-break-before');
                     pageIndex += 1;
                     currentPageHeight = 0;
+                    pendingPageBreak = false;
                     i += 1;
                     continue;
                 }
@@ -472,6 +768,7 @@ function applyPageBreaks(editorElement, pageHeight) {
                     remainderBlock.classList.add('page-break-before');
                     pageIndex += 1;
                     currentPageHeight = 0;
+                    pendingPageBreak = false;
                     i += 1;
                     continue;
                 }
@@ -481,7 +778,10 @@ function applyPageBreaks(editorElement, pageHeight) {
                 // Default: move whole block to next page.
                 pageIndex += 1;
                 currentPageHeight = 0;
-                block.classList.add('page-break-before');
+                pendingPageBreak = true;
+                if (!pageSummaries[pageIndex - 1]) {
+                    pageSummaries[pageIndex - 1] = createPageSummary(pageIndex);
+                }
                 // Re-evaluate this same block on a fresh page so splittable
                 // content gets a chance to split against the full page height.
                 continue;
@@ -500,6 +800,8 @@ function applyPageBreaks(editorElement, pageHeight) {
 
         i += 1;
     }
+
+    applyFixedPageHeightSpacers(editorElement, pageSummaries, pageHeight);
 
     return {
         totalPages: pageIndex,
